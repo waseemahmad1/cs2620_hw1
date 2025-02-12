@@ -5,9 +5,9 @@ import json
 import threading
 import hashlib
 
-from .protocol_json import create_msg
-from .data_store import users, active_users
-from .handlers import (
+from Server.protocol_json import create_msg
+from Server.data_store import users, active_users
+from Server.handlers import (
     handle_login, handle_create, handle_list, handle_send,
     handle_read, handle_delete_msg, handle_delete, handle_logoff
 )

@@ -1,6 +1,6 @@
 # server/server_main.py
 
-from .chat_server import ChatServer
+from Server.chat_server import ChatServer
 
 def main():
     server = ChatServer(host='localhost', port=12345)
