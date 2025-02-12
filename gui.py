@@ -351,6 +351,25 @@ class ChatGUI:
                 self.append_text(display_text)
             except Exception as e:
                 self.append_text(f"Error parsing unread messages: {e}")
+        elif cmd == "chat":
+            try:
+                # Expect the payload to be a JSON array (even if it contains just one message)
+                messages = json.loads(body)
+                if isinstance(messages, list) and messages:
+                    # We'll take the first message from the list.
+                    m = messages[0]
+                    sender = m.get("sender", "Unknown")
+                    message_text = m.get("message", "")
+                    self.append_text(f"{sender}: {message_text}")
+                else:
+                    # If not a list, just show the body.
+                    sender = msg.get("from", "Unknown")
+                    self.append_text(f"{sender}: {body}")
+            except Exception as e:
+                # If parsing fails, display the message as plain text.
+                sender = msg.get("from", "Unknown")
+                self.append_text(f"{sender}: {body}")
+
 
         elif cmd == "send":
             self.append_text(body)
