@@ -4,9 +4,9 @@ import struct
 import threading
 import time
 import sys
-from protocol_custom import (
+from Custom_impl.protocol_custom import (
     CMD_LOGIN, CMD_CREATE, CMD_SEND, CMD_READ, CMD_DELETE_MSG,
-    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE,
+    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE, CMD_SEARCH_USERS,CMD_READ_ACK,
     encode_message, decode_message, pack_short_string, pack_long_string,
     unpack_short_string, unpack_long_string
 )
@@ -44,6 +44,10 @@ def pack_logoff(username):
 def pack_close(username):
     return pack_short_string(username)
 
+def pack_search_users(wildcard):
+    """Packs a search request with a wildcard pattern."""
+    return pack_short_string(wildcard)
+
 # --- ChatClient class ---
 class ChatClient:
     def __init__(self, host, port):
@@ -75,23 +79,44 @@ class ChatClient:
         print("Send message response:", response)
 
     def read_messages(self, limit=0):
+        """Reads messages and ensures the client can continue executing commands afterward."""
         if self.username is None:
             print("Please login first.")
             return
         self.sock.sendall(encode_message(CMD_READ, pack_read(self.username, limit)))
         print("Reading messages:")
+
         try:
-            # We'll read messages until a non-CMD_READ response is encountered.
             while True:
                 cmd, payload = decode_message(self.sock)
+
                 if cmd != CMD_READ:
-                    # Not a read response—push it back or break.
-                    break
+                    response, _ = unpack_long_string(payload, 0)
+                    
+                    if response == "END_OF_MESSAGES":
+                        print("Finished reading messages.")
+                        break  # Exit loop safely
+                    
+                    if response == "NO_MESSAGES":
+                        print("No new messages.")
+                        break  # Exit loop safely
+
+                    print(f"Unexpected response: {response}")
+                    break  # Ensure client does not hang
+
                 sender, offset = unpack_short_string(payload, 0)
                 message, offset = unpack_long_string(payload, offset)
                 print(f"From {sender}: {message}")
+
         except Exception as e:
-            pass
+            print(f"Error while reading messages: {e}")
+
+        # 👇 SEND ACKNOWLEDGMENT TO SERVER AFTER READING IS DONE
+        self.sock.sendall(encode_message(CMD_READ_ACK, pack_short_string("DONE")))
+
+        print("Returning to menu...\n")
+
+
 
     def delete_messages(self, indices):
         if self.username is None:
@@ -125,6 +150,16 @@ class ChatClient:
         print("Delete account response:", response)
         self.username = None
 
+    def search_users(self, wildcard="*"):
+        """Sends a request to the server to search for matching usernames."""
+        if self.username is None:
+            print("Please login first.")
+            return
+        self.sock.sendall(encode_message(CMD_SEARCH_USERS, pack_search_users(wildcard)))
+        cmd, payload = decode_message(self.sock)
+        response, _ = unpack_long_string(payload, 0)
+        print("Matching users:", response)
+
     def log_off(self):
         if self.username is None:
             print("Not logged in.")
@@ -155,6 +190,7 @@ def client_main():
         print("7. Delete account")
         print("8. Log off")
         print("9. Close")
+        print("10. Search users")
         choice = input("Choose an option: ")
         if choice == "1":
             username = input("Enter username: ")
@@ -175,6 +211,7 @@ def client_main():
             except:
                 limit = 0
             client.read_messages(limit)
+            input("Press Enter to return to the menu...")  # Prevents accidental skipping
         elif choice == "5":
             indices = input("Enter indices to delete (comma separated): ")
             indices = [int(x.strip()) for x in indices.split(",") if x.strip().isdigit()]
@@ -189,6 +226,9 @@ def client_main():
         elif choice == "9":
             client.close()
             break
+        elif choice == "10":
+            wildcard = input("Enter search pattern (use * as wildcard): ")
+            client.search_users(wildcard)
         else:
             print("Invalid option.")
 
