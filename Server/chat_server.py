@@ -1,5 +1,3 @@
-# server/chat_server.py
-
 import socket
 import json
 import threading
@@ -9,22 +7,21 @@ from Server.protocol_json import create_msg
 from Server.data_store import users, active_users
 from Server.handlers import (
     handle_login, handle_create, handle_list, handle_send,
-    handle_read, handle_delete_msg, handle_delete, handle_logoff
+    handle_read, handle_delete_msg, handle_delete, handle_logoff, handle_view_conv
 )
-
 
 class ChatServer:
     MSGLEN = 409600
 
     def __init__(self, host='localhost', port=12345):
-        # Just store host/port
         self.host = host
         self.port = port
-
-        # Create and bind the server socket
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind((self.host, self.port))
         self.running = True
+
+        # Store conversations (keyed by tuple of sorted usernames)
+        self.conversations = {}
 
     def start(self):
         self.server.listen()
@@ -57,7 +54,6 @@ class ChatServer:
                 yield line
         return 0
 
-    # Hash the password for safety purposes
     def hash_password(self, password):
         return hashlib.sha256(password.encode()).hexdigest()
 
@@ -69,7 +65,6 @@ class ChatServer:
                 if not raw_msg:
                     continue
 
-                # Attempt to parse JSON
                 try:
                     parts = json.loads(raw_msg)
                 except json.JSONDecodeError:
@@ -79,7 +74,7 @@ class ChatServer:
                 cmd = parts.get("cmd", "")
                 username = parts.get("from", "")
 
-                # Route commands to the appropriate handler
+                # Route commands to handlers
                 if cmd == "login":
                     handle_login(self, conn, parts)
                 elif cmd == "create":
@@ -96,6 +91,8 @@ class ChatServer:
                     handle_delete(self, conn, parts)
                 elif cmd == "logoff":
                     handle_logoff(self, conn, parts)
+                elif cmd == "view_conv":
+                    handle_view_conv(self, conn, parts)
                 elif cmd == "close":
                     print(f"{addr} has been successfully disconnected!")
                     break
