@@ -29,8 +29,9 @@ class TestChatServer(unittest.TestCase):
 
     def send_and_receive(self, message):
         """Helper function to send a message and receive a response"""
-        self.client.sendall(message)
-        return self.client.recv(409600).decode()
+        self.client.sendall(message.encode())  # Convert string to bytes
+        return self.client.recv(409600).decode()  # Convert bytes back to string
+
 
     def test_create_account(self):
         """Test creating a new user account"""
@@ -56,10 +57,11 @@ class TestChatServer(unittest.TestCase):
 
     def test_send_message(self):
         """Ensure recipient exists before sending a message"""
-        self.send_and_receive(json.dumps({"cmd": "create", "from": "receiver", "password": "1234"}) + "\n")  # Create recipient
+        self.send_and_receive(json.dumps({"cmd": "create", "from": "receiver", "password": "1234"}).encode())  # Create recipient
         msg = json.dumps({"cmd": "send", "from": "test_user", "to": "receiver", "body": "Hello!"}) + "\n"
         response = self.send_and_receive(msg.encode())
         self.assertIn("Message sent", response)
+
 
     def test_read_messages(self):
         """Ensure messages are sent before reading them"""
