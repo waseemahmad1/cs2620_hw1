@@ -55,15 +55,15 @@ class TestChatServer(unittest.TestCase):
         self.assertIn("test_user", response)
 
     def test_send_message(self):
-        """Test sending a message to another user"""
-        self.test_create_account()
+        """Ensure recipient exists before sending a message"""
+        self.send_and_receive(json.dumps({"cmd": "create", "from": "receiver", "password": "1234"}) + "\n")  # Create recipient
         msg = json.dumps({"cmd": "send", "from": "test_user", "to": "receiver", "body": "Hello!"}) + "\n"
         response = self.send_and_receive(msg.encode())
         self.assertIn("Message sent", response)
 
     def test_read_messages(self):
-        """Test reading messages"""
-        self.test_send_message()
+        """Ensure messages are sent before reading them"""
+        self.test_send_message()  # Ensures a message is sent first
         msg = json.dumps({"cmd": "read", "from": "receiver"}) + "\n"
         response = self.send_and_receive(msg.encode())
         self.assertIn("Hello!", response)
