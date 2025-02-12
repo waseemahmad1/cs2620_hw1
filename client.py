@@ -167,9 +167,30 @@ def handle_message():
                     print("Logged in successfully. {}".format(msg.get("body", "")))
                     client.username = msg.get("to", "")
             elif cmd == "read":
-                # For messages read from the server.
-                print("{} sent: {}".format(msg.get("from", ""), msg.get("body", "")))
-                print(datetime.datetime.now())
+                try:
+                    parsed = json.loads(body)
+                    if isinstance(parsed, list):
+                        display_text = "Unread Messages:\n"
+                        for m in parsed:
+                            if isinstance(m, dict):
+                                # Try to get 'id' first, then 'index'
+                                msg_id = m.get("id", m.get("index", "N/A"))
+                                sender = m.get("sender", "Unknown")
+                                message_text = m.get("message", "")
+                                display_text += f"[ID {msg_id}] {sender}: {message_text}\n"
+                            else:
+                                # If m is not a dict, assume it's a plain message string.
+                                display_text += f"{m}\n"
+                        self.append_text(display_text)
+                    else:
+                        # If parsed JSON is not a list, treat body as plain text.
+                        sender = msg.get("from", "Unknown")
+                        self.append_text(f"{sender}: {body}")
+                except Exception as e:
+                    # If JSON parsing fails, treat body as plain text.
+                    sender = msg.get("from", "Unknown")
+                    self.append_text(f"{sender}: {body}")
+
             elif cmd == "create":
                 if msg.get("error", False):
                     print("Failed to create account: {}. Please try again.".format(msg.get("body", "")))
@@ -195,11 +216,15 @@ def handle_message():
                 else:
                     print(msg.get("body", ""))
             elif cmd == "view_conv":
-                if msg.get("error", False):
-                    print("Error viewing conversation: {}".format(msg.get("body", "")))
-                else:
-                    print("Conversation with {}:".format(msg.get("to", "")))
-                    print(msg.get("body", ""))
+                try:
+                    conv = json.loads(body)
+                    display_text = "Conversation:\n"
+                    for m in conv:
+                        display_text += f"[ID {m['id']}] {m['sender']} ({m['timestamp']}): {m['message']}\n"
+                    self.append_text(display_text)
+                except Exception as e:
+                    self.append_text(f"Error parsing conversation history: {e}")
+
             elif cmd == "logoff":
                 print(msg.get("body", "Logged off"))
             else:
