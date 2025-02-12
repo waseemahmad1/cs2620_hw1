@@ -1,31 +1,35 @@
-# client_custom.py
 import socket
 import struct
 import threading
-import time
 import sys
-from Custom_impl.protocol_custom import (
+from protocol_custom import (
     CMD_LOGIN, CMD_CREATE, CMD_SEND, CMD_READ, CMD_DELETE_MSG,
-    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE, CMD_SEARCH_USERS,CMD_READ_ACK,
-    encode_message, decode_message, pack_short_string, pack_long_string,
+    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE,
+    CMD_CHAT, CMD_LIST, CMD_READ_ACK,
+    encode_message, decode_message,
+    pack_short_string, pack_long_string,
     unpack_short_string, unpack_long_string
 )
 
-# --- Helper functions to pack commands ---
+# Helper functions for packing data for each command
 def pack_login(username, password):
+    # Pack username and password into a login payload
     return pack_short_string(username) + pack_short_string(password)
 
 def pack_create(username, password):
+    # Pack username and password for account creation
     return pack_short_string(username) + pack_short_string(password)
 
 def pack_send(sender, recipient, message):
+    # Pack sender recipient and message into a payload
     return pack_short_string(sender) + pack_short_string(recipient) + pack_long_string(message)
 
 def pack_read(username, limit):
-    # limit is 1 byte (0 means all)
+    # Pack username and a 1 byte limit 0 means read all messages
     return pack_short_string(username) + struct.pack("!B", limit)
 
 def pack_delete_msg(username, indices):
+    # Pack username and a list of indices of messages to delete
     data = pack_short_string(username)
     data += struct.pack("!B", len(indices))
     for idx in indices:
@@ -33,204 +37,225 @@ def pack_delete_msg(username, indices):
     return data
 
 def pack_view_conv(username, other_user):
+    # Pack username and the other user to view conversation
     return pack_short_string(username) + pack_short_string(other_user)
 
 def pack_delete_acc(username):
+    # Pack username for account deletion
     return pack_short_string(username)
 
 def pack_logoff(username):
+    # Pack username for logging off
     return pack_short_string(username)
 
 def pack_close(username):
+    # Pack username for closing the connection
     return pack_short_string(username)
 
-def pack_search_users(wildcard):
-    """Packs a search request with a wildcard pattern."""
-    return pack_short_string(wildcard)
-
-# --- ChatClient class ---
+# Chatclient class handles client server communication
 class ChatClient:
     def __init__(self, host, port):
+        # Create and connect the socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((host, port))
-        self.username = None
+        self.username = None 
 
     def login(self, username, password):
-        self.sock.sendall(encode_message(CMD_LOGIN, pack_login(username, password)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        if "successful" in response:
+        # build and send the login payload
+        payload = pack_login(username, password)
+        self.sock.sendall(encode_message(CMD_LOGIN, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        # Update username if login is successful
+        if "successful" in resp:
             self.username = username
-        print("Login response:", response)
+        print("login response", resp)
 
     def create_account(self, username, password):
-        self.sock.sendall(encode_message(CMD_CREATE, pack_create(username, password)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        print("Create account response:", response)
+        # Build and send the account creation payload
+        payload = pack_create(username, password)
+        self.sock.sendall(encode_message(CMD_CREATE, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        print("create account response", resp)
+
+    def list_accounts(self, wildcard="*"):
+        # Use a helper function to pack the wildcard
+        payload = pack_list(wildcard)
+        self.sock.sendall(encode_message(CMD_LIST, payload))
+        cmd, data = decode_message(self.sock)
+        # If the server returned a long string response for the list unpack and display matching accounts
+        if cmd == CMD_LIST:
+            resp, _ = unpack_long_string(data, 0)
+            print("matching accounts", resp)
+        else:
+            resp, _ = unpack_short_string(data, 0)
+            print("list error", resp)
 
     def send_message(self, recipient, message):
-        if self.username is None:
-            print("Please login first.")
+        # Check if user is logged in before sending a message
+        if not self.username:
+            print("please login first")
             return
-        self.sock.sendall(encode_message(CMD_SEND, pack_send(self.username, recipient, message)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        print("Send message response:", response)
+        payload = pack_send(self.username, recipient, message)
+        self.sock.sendall(encode_message(CMD_SEND, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        print("send message response", resp)
 
     def read_messages(self, limit=0):
-        """Reads messages and ensures the client can continue executing commands afterward."""
-        if self.username is None:
-            print("Please login first.")
+        # Check if user is logged in before reading messages
+        if not self.username:
+            print("please login first")
             return
-        self.sock.sendall(encode_message(CMD_READ, pack_read(self.username, limit)))
-        print("Reading messages:")
-
-        try:
-            while True:
-                cmd, payload = decode_message(self.sock)
-
-                if cmd != CMD_READ:
-                    response, _ = unpack_long_string(payload, 0)
-                    
-                    if response == "END_OF_MESSAGES":
-                        print("Finished reading messages.")
-                        break  # Exit loop safely
-                    
-                    if response == "NO_MESSAGES":
-                        print("No new messages.")
-                        break  # Exit loop safely
-
-                    print(f"Unexpected response: {response}")
-                    break  # Ensure client does not hang
-
-                sender, offset = unpack_short_string(payload, 0)
-                message, offset = unpack_long_string(payload, offset)
-                print(f"From {sender}: {message}")
-
-        except Exception as e:
-            print(f"Error while reading messages: {e}")
-
-        # 👇 SEND ACKNOWLEDGMENT TO SERVER AFTER READING IS DONE
-        self.sock.sendall(encode_message(CMD_READ_ACK, pack_short_string("DONE")))
-
-        print("Returning to menu...\n")
-
-
+        payload = pack_read(self.username, limit)
+        self.sock.sendall(encode_message(CMD_READ, payload))
+        print("reading messages")
+        # Loop until a non read message is received
+        while True:
+            cmd, data = decode_message(self.sock)
+            if cmd != CMD_READ:
+                msg_text, _ = unpack_long_string(data, 0)
+                if msg_text == "NO_MESSAGES":
+                    print("no new messages")
+                elif msg_text == "END_OF_MESSAGES":
+                    print("finished reading messages")
+                else:
+                    print("unexpected code  message", msg_text)
+                break
+            offset = 0
+            sender, offset = unpack_short_string(data, offset)
+            msg_text, offset = unpack_long_string(data, offset)
+            print("from", sender, ":", msg_text)
+        # Send an acknowledgement after finishing reading messages
+        ack_payload = pack_short_string("DONE")
+        self.sock.sendall(encode_message(CMD_READ_ACK, ack_payload))
 
     def delete_messages(self, indices):
-        if self.username is None:
-            print("Please login first.")
+        # Check if user is logged in before deleting messages
+        if not self.username:
+            print("please login first")
             return
-        self.sock.sendall(encode_message(CMD_DELETE_MSG, pack_delete_msg(self.username, indices)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        print("Delete message response:", response)
+        payload = pack_delete_msg(self.username, indices)
+        self.sock.sendall(encode_message(CMD_DELETE_MSG, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        print("delete messages response", resp)
 
     def view_conversation(self, other_user):
-        if self.username is None:
-            print("Please login first.")
+        # Check if the user is logged in before viewing a conversation
+        if not self.username:
+            print("please login first")
             return
-        self.sock.sendall(encode_message(CMD_VIEW_CONV, pack_view_conv(self.username, other_user)))
-        cmd, payload = decode_message(self.sock)
+        payload = pack_view_conv(self.username, other_user)
+        self.sock.sendall(encode_message(CMD_VIEW_CONV, payload))
+        cmd, data = decode_message(self.sock)
         if cmd == CMD_VIEW_CONV:
-            conv, _ = unpack_long_string(payload, 0)
-            print("Conversation:", conv)
+            conv_str, _ = unpack_long_string(data, 0)
+            print("conversation", conv_str)
         else:
-            response, _ = unpack_short_string(payload, 0)
-            print("View conversation response:", response)
+            resp, _ = unpack_short_string(data, 0)
+            print("view conversation response", resp)
 
     def delete_account(self):
-        if self.username is None:
-            print("Please login first.")
+        # Delete the currently logged in account
+        if not self.username:
+            print("please login first")
             return
-        self.sock.sendall(encode_message(CMD_DELETE_ACC, pack_delete_acc(self.username)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        print("Delete account response:", response)
-        self.username = None
-
-    def search_users(self, wildcard="*"):
-        """Sends a request to the server to search for matching usernames."""
-        if self.username is None:
-            print("Please login first.")
-            return
-        self.sock.sendall(encode_message(CMD_SEARCH_USERS, pack_search_users(wildcard)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_long_string(payload, 0)
-        print("Matching users:", response)
+        payload = pack_delete_acc(self.username)
+        self.sock.sendall(encode_message(CMD_DELETE_ACC, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        print("delete account response", resp)
+        if "deleted" in resp.lower():
+            self.username = None
 
     def log_off(self):
-        if self.username is None:
-            print("Not logged in.")
+        # Log off from the server
+        if not self.username:
+            print("not logged in")
             return
-        self.sock.sendall(encode_message(CMD_LOGOFF, pack_logoff(self.username)))
-        cmd, payload = decode_message(self.sock)
-        response, _ = unpack_short_string(payload, 0)
-        print("Logoff response:", response)
+        payload = pack_logoff(self.username)
+        self.sock.sendall(encode_message(CMD_LOGOFF, payload))
+        cmd, data = decode_message(self.sock)
+        resp, _ = unpack_short_string(data, 0)
+        print("log off response", resp)
         self.username = None
 
     def close(self):
+        # Close the connection to the server
         uname = self.username if self.username else ""
-        self.sock.sendall(encode_message(CMD_CLOSE, pack_close(uname)))
+        payload = pack_close(uname)
+        self.sock.sendall(encode_message(CMD_CLOSE, payload))
         self.sock.close()
 
 def client_main():
-    host = input("Enter server host: ")
-    port = int(input("Enter server port: "))
+    # Ask user for server host and port
+    host = input("enter server host ")
+    port = int(input("enter server port "))
     client = ChatClient(host, port)
+
     while True:
-        print("\nMenu:")
-        print("1. Create account")
-        print("2. Login")
-        print("3. Send message")
-        print("4. Read messages")
-        print("5. Delete messages")
-        print("6. View conversation")
-        print("7. Delete account")
-        print("8. Log off")
-        print("9. Close")
-        print("10. Search users")
-        choice = input("Choose an option: ")
-        if choice == "1":
-            username = input("Enter username: ")
-            password = input("Enter password: ")
-            client.create_account(username, password)
-        elif choice == "2":
-            username = input("Enter username: ")
-            password = input("Enter password: ")
-            client.login(username, password)
-        elif choice == "3":
-            recipient = input("Enter recipient username: ")
-            message = input("Enter message: ")
-            client.send_message(recipient, message)
-        elif choice == "4":
-            limit = input("Enter number of messages to read (0 for all): ")
-            try:
-                limit = int(limit)
-            except:
-                limit = 0
-            client.read_messages(limit)
-            input("Press Enter to return to the menu...")  # Prevents accidental skipping
-        elif choice == "5":
-            indices = input("Enter indices to delete (comma separated): ")
-            indices = [int(x.strip()) for x in indices.split(",") if x.strip().isdigit()]
-            client.delete_messages(indices)
-        elif choice == "6":
-            other_user = input("Enter username to view conversation with: ")
-            client.view_conversation(other_user)
-        elif choice == "7":
-            client.delete_account()
-        elif choice == "8":
-            client.log_off()
-        elif choice == "9":
-            client.close()
-            break
-        elif choice == "10":
-            wildcard = input("Enter search pattern (use * as wildcard): ")
-            client.search_users(wildcard)
+        if client.username is None:
+            print("\nmenu")
+            print("1 create account")
+            print("2 login")
+            print("3 close")
+            choice = input("choose an option ")
+            if choice == "1":
+                uname = input("enter username ")
+                pw = input("enter password ")
+                client.create_account(uname, pw)
+            elif choice == "2":
+                uname = input("enter username ")
+                pw = input("enter password ")
+                client.login(uname, pw)
+            elif choice == "3":
+                client.close()
+                break
+            else:
+                print("invalid choice please login first")
         else:
-            print("Invalid option.")
+            print("\nmenu")
+            print("1 list accounts")
+            print("2 send message")
+            print("3 read messages")
+            print("4 delete messages")
+            print("5 view conversation")
+            print("6 delete account")
+            print("7 log off")
+            print("8 close")
+            choice = input("choose an option ")
+            if choice == "1":
+                pattern = input("enter wildcard pattern default * ") or "*"
+                client.list_accounts(pattern)
+            elif choice == "2":
+                rec = input("recipient username ")
+                msg = input("message ")
+                client.send_message(rec, msg)
+            elif choice == "3":
+                limit = input("enter number of messages to read 0 for all ")
+                try:
+                    limit = int(limit)
+                except:
+                    limit = 0
+                client.read_messages(limit)
+            elif choice == "4":
+                idx_str = input("enter indices to delete comma separated ")
+                idx_list = [int(x.strip()) for x in idx_str.split(",") if x.strip().isdigit()]
+                client.delete_messages(idx_list)
+            elif choice == "5":
+                ou = input("enter other user's name ")
+                client.view_conversation(ou)
+            elif choice == "6":
+                client.delete_account()
+            elif choice == "7":
+                client.log_off()
+            elif choice == "8":
+                client.close()
+                break
+            else:
+                print("invalid choice")
 
 if __name__ == "__main__":
     client_main()
