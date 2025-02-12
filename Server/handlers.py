@@ -46,7 +46,7 @@ def handle_delete(server, conn, parts):
         del active_users[username]
 
     conn.send(create_msg(cmd, body="Account has been successfully deleted."))
-
+    # log out after deleting account
 
 def handle_logoff(server, conn, parts):
     cmd = parts.get("cmd")
