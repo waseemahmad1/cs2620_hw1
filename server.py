@@ -23,12 +23,14 @@ class ChatServer:
     def __init__(self, host='localhost', port=12345):
         self.host = socket.gethostbyname(socket.gethostname())
         self.port = port
-        self.users = OrderedDict()
-        self.active_users = {}
-        self.conversations = {}
+        self.users = OrderedDict()     # Maps username to {"password_hash": ..., "messages": [msg_entry, ...]}
+        self.active_users = {}         # Maps username to connection objects
+        self.conversations = {}        # Maps (user1, user2) sorted tuple to list of message entries
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind((host, port))
+        self.server.bind(('0.0.0.0', port))
         self.running = True
+        self.next_msg_id = 1           # New: global counter for message IDs
+
 
     def start(self):
         self.server.listen()
@@ -114,20 +116,32 @@ class ChatServer:
                     conv_key = tuple(sorted([username, recipient]))
                     if conv_key not in self.conversations:
                         self.conversations[conv_key] = []
-                    self.conversations[conv_key].append({"sender": username, "message": message, "timestamp": timestamp})
-                    
+                    # Create a message entry with a unique id.
+                    msg_id = self.next_msg_id
+                    self.next_msg_id += 1
+                    message_entry = {
+                        "id": msg_id,
+                        "sender": username,
+                        "message": message,
+                        "timestamp": timestamp
+                    }
+                    self.conversations[conv_key].append(message_entry)
+
                     if recipient not in self.users:
                         conn.send(self.create_msg(cmd, body="Recipient not found", err=True))
                     else:
                         if recipient in self.active_users:
                             try:
-                                self.active_users[recipient].send(self.create_msg("read", src=username, body=message))
+                                # Push the message immediately.
+                                payload = json.dumps(message_entry)
+                                self.active_users[recipient].send(self.create_msg("read", src=username, body=payload))
                             except Exception as e:
                                 print(f"Error sending to active user {recipient}: {e}")
-                                self.users[recipient]["messages"].append((username, message))
+                                self.users[recipient]["messages"].append(message_entry)
                         else:
-                            self.users[recipient]["messages"].append((username, message))
+                            self.users[recipient]["messages"].append(message_entry)
                         conn.send(self.create_msg(cmd, body="Message sent"))
+
 
                 elif cmd == "read":
                     if username not in self.users:
@@ -141,33 +155,41 @@ class ChatServer:
                             except ValueError:
                                 limit = None
                         user_messages = self.users[username]["messages"]
-                        if limit is not None:
-                            messages_to_deliver = user_messages[:limit]
-                            remaining_messages = user_messages[limit:]
+                        if limit is not None and limit > 0:
+                            messages_to_view = user_messages[:limit]
+                            self.users[username]["messages"] = user_messages[limit:]
                         else:
-                            messages_to_deliver = user_messages
-                            remaining_messages = []
-                        for (sender, msg_text) in messages_to_deliver:
-                            conn.send(self.create_msg("read", src=sender, body=msg_text))
-                        self.users[username]["messages"] = remaining_messages
+                            messages_to_view = user_messages
+                            self.users[username]["messages"] = []
+                        # Build a list of messages (with their unique IDs) to return.
+                        msgs_with_index = []
+                        for msg_entry in messages_to_view:
+                            msgs_with_index.append({
+                                "id": msg_entry["id"],
+                                "sender": msg_entry["sender"],
+                                "message": msg_entry["message"]
+                            })
+                        composite_body = json.dumps(msgs_with_index, indent=2)
+                        conn.send(self.create_msg(cmd, body=composite_body))
 
                 elif cmd == "delete_msg":
                     if username not in self.users:
                         conn.send(self.create_msg(cmd, body="User not found", err=True))
                     else:
-                        raw_indices = parts.get("body", "")
-                        indices = []
-                        if isinstance(raw_indices, list):
-                            indices = raw_indices
-                        else:
-                            try:
-                                indices = [int(x.strip()) for x in raw_indices.split(",") if x.strip().isdigit()]
-                            except Exception as e:
-                                conn.send(self.create_msg(cmd, body="Invalid indices", err=True))
-                                continue
-                        current_msgs = self.users[username]["messages"]
-                        new_msgs = [msg for idx, msg in enumerate(current_msgs) if idx not in indices]
-                        self.users[username]["messages"] = new_msgs
+                        raw_ids = parts.get("body", "")
+                        try:
+                            ids_to_delete = [int(x.strip()) for x in raw_ids.split(",") if x.strip().isdigit()]
+                        except Exception as e:
+                            conn.send(self.create_msg(cmd, body="Invalid message IDs", err=True))
+                            continue
+                        # Remove from unread messages.
+                        current_unread = self.users[username]["messages"]
+                        self.users[username]["messages"] = [msg for msg in current_unread if msg["id"] not in ids_to_delete]
+                        # Remove from conversation histories.
+                        for conv_key in self.conversations:
+                            if username in conv_key:
+                                conv = self.conversations[conv_key]
+                                self.conversations[conv_key] = [msg for msg in conv if msg["id"] not in ids_to_delete]
                         conn.send(self.create_msg(cmd, body="Specified messages deleted"))
 
                 elif cmd == "view_conv":
@@ -177,10 +199,23 @@ class ChatServer:
                     else:
                         conv_key = tuple(sorted([username, other_user]))
                         conversation = self.conversations.get(conv_key, [])
+                        # Mark unread messages from 'other_user' as read for this user:
+                        if username in self.users:
+                            current_unread = self.users[username]["messages"]
+                            self.users[username]["messages"] = [msg for msg in current_unread if msg["sender"] != other_user]
                         if not conversation:
                             conn.send(self.create_msg(cmd, body="No conversation history found"))
                         else:
-                            conv_str = json.dumps(conversation, indent=2)
+                            # Build conversation history with the message IDs.
+                            conv_with_index = []
+                            for msg_entry in conversation:
+                                conv_with_index.append({
+                                    "id": msg_entry["id"],
+                                    "sender": msg_entry["sender"],
+                                    "message": msg_entry["message"],
+                                    "timestamp": msg_entry["timestamp"]
+                                })
+                            conv_str = json.dumps(conv_with_index, indent=2)
                             conn.send(self.create_msg(cmd, to=other_user, body=conv_str))
 
                 elif cmd == "delete":
