@@ -1,5 +1,5 @@
 from .protocol_json import create_msg
-from .data_store import users, active_users, get_matching_users
+from Server.data_store import users, active_users, get_matching_users, get_unread_messages, get_conversation, store_message, get_unread_message_count
 import json
 
 def handle_login(server, conn, parts):
@@ -9,16 +9,22 @@ def handle_login(server, conn, parts):
 
     if username not in users:
         conn.send(create_msg(cmd, body="Invalid or incorrect username", err=True))
-    else:
-        stored_hash = users[username]["password_hash"]
-        if stored_hash != server.hash_password(password):
-            conn.send(create_msg(cmd, body="Invalid or incorrect password", err=True))
-        elif username in active_users:
-            conn.send(create_msg(cmd, body="You are already logged in!", err=True))
-        else:
-            active_users[username] = conn
-            unread_count = len(users[username]["messages"])
-            conn.send(create_msg(cmd, body=f"Login successful! You have {unread_count} messages", to=username))
+        return
+
+    stored_hash = users[username]["password_hash"]
+    if stored_hash != server.hash_password(password):
+        conn.send(create_msg(cmd, body="Invalid or incorrect password", err=True))
+        return
+
+    if username in active_users:
+        conn.send(create_msg(cmd, body="You are already logged in!", err=True))
+        return
+
+    # Correctly fetch unread message count
+    unread_count = get_unread_message_count(username)
+
+    active_users[username] = conn
+    conn.send(create_msg(cmd, body=f"Login successful! You have {unread_count} unread messages", to=username))
             
 def handle_delete(server, conn, parts):
     cmd = parts.get("cmd")
@@ -70,31 +76,28 @@ def handle_delete_msg(server, conn, parts):
     conn.send(create_msg(cmd, body="Specified messages deleted"))
 
 def handle_read(server, conn, parts):
+    """ Fetches unread messages (with a user-specified limit) and marks them as read. """
     cmd = parts.get("cmd")
     username = parts.get("from")
 
     if username not in users:
         conn.send(create_msg(cmd, body="User not found", err=True))
-    else:
-        body_field = parts.get("body", "")
+        return
+
+    limit = parts.get("body", "")
+    try:
+        limit = int(limit) if limit else None
+    except ValueError:
         limit = None
-        if body_field:
-            try:
-                limit = int(body_field)
-            except ValueError:
-                limit = None
 
-        user_messages = users[username]["messages"]
-        if limit is not None:
-            messages_to_read = user_messages[:limit]
-            remaining_messages = user_messages[limit:]
-        else:
-            messages_to_read = user_messages
-            remaining_messages = []
+    unread_messages = get_unread_messages(username, limit)
 
-        for (sender, msg_text) in messages_to_read:
-            conn.send(create_msg("read", src=sender, body=msg_text))
-        users[username]["messages"] = remaining_messages
+    if not unread_messages:
+        conn.send(create_msg(cmd, body="No unread messages"))
+    else:
+        for msg in unread_messages:
+            conn.send(create_msg("read", src=msg["sender"], body=msg["text"]))
+
 
 def handle_create(server, conn, parts):
     cmd = parts.get("cmd")
@@ -125,25 +128,21 @@ def handle_send(server, conn, parts):
 
     if recipient not in users:
         conn.send(create_msg(cmd, body="User not found", err=True))
-    else:
-        # Store conversation history
-        conv_key = tuple(sorted([username, recipient]))
-        if conv_key not in server.conversations:
-            server.conversations[conv_key] = []
-        server.conversations[conv_key].append({"from": username, "to": recipient, "message": message})
+        return
 
-        if recipient in active_users:
-            try:
-                active_users[recipient].send(create_msg("read", src=username, body=message))
-            except Exception as e:
-                print(f"There was an error sending your message to {recipient}: {e}")
-                users[recipient]["messages"].append((username, message))
-        else:
-            users[recipient]["messages"].append((username, message))
+    # Store the message with a "read" status
+    store_message(username, recipient, message)
 
-        conn.send(create_msg(cmd, body="Your message has been sent"))
+    if recipient in active_users:
+        try:
+            active_users[recipient].send(create_msg("read", src=username, body=message))
+        except Exception as e:
+            print(f"Error sending message to {recipient}: {e}")
+
+    conn.send(create_msg(cmd, body="Your message has been sent"))
 
 def handle_view_conv(server, conn, parts):
+    """ Fetches full conversation history and marks unread messages as read. """
     cmd = parts.get("cmd")
     username = parts.get("from")
     other_user = parts.get("to", "")
@@ -152,12 +151,11 @@ def handle_view_conv(server, conn, parts):
         conn.send(create_msg(cmd, body="User not found", err=True))
         return
 
-    conv_key = tuple(sorted([username, other_user]))
-    conversation = server.conversations.get(conv_key, [])
+    conversation = get_conversation(username, other_user)
 
     if not conversation:
         conn.send(create_msg(cmd, body="No conversation history found"))
     else:
-        conv_str = json.dumps(conversation, indent=2)
-        conn.send(create_msg(cmd, to=other_user, body=conv_str))
+        convo_str = "\n".join(f"{msg['sender']}: {msg['text']}" for msg in conversation)
+        conn.send(create_msg("view_conv", to=other_user, body=convo_str))
 
