@@ -132,15 +132,16 @@ class ChatServer:
                     else:
                         if recipient in self.active_users:
                             try:
-                                # Push the message immediately.
-                                payload = json.dumps(message_entry)
-                                self.active_users[recipient].send(self.create_msg("read", src=username, body=payload))
+                                # Push the message immediately using a different command ("chat")
+                                payload = json.dumps([message_entry])
+                                self.active_users[recipient].send(self.create_msg("chat", src=username, body=payload))
                             except Exception as e:
                                 print(f"Error sending to active user {recipient}: {e}")
                                 self.users[recipient]["messages"].append(message_entry)
                         else:
                             self.users[recipient]["messages"].append(message_entry)
                         conn.send(self.create_msg(cmd, body="Message sent"))
+
 
 
                 elif cmd == "read":
@@ -221,12 +222,15 @@ class ChatServer:
                 elif cmd == "delete":
                     if username not in self.users:
                         conn.send(self.create_msg(cmd, body="User does not exist", err=True))
-                    elif len(self.users[username]["messages"]) > 0:
-                        conn.send(self.create_msg(cmd, body="Undelivered messages exist", err=True))
                     else:
+                        # Delete the user's account from the user database.
                         del self.users[username]
                         if username in self.active_users:
                             del self.active_users[username]
+                        # Remove any conversation histories involving this username.
+                        for conv_key in list(self.conversations.keys()):
+                            if username in conv_key:
+                                del self.conversations[conv_key]
                         conn.send(self.create_msg(cmd, body="Account deleted"))
 
                 elif cmd == "logoff":
