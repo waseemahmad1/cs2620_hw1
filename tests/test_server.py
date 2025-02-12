@@ -33,7 +33,8 @@ class TestChatServer(unittest.TestCase):
 
     def test_create_account(self):
         """Test creating a new user account"""
-        msg = json.dumps({"cmd": "create", "from": "test_user", "password": "1234"}) + "\n"
+        unique_user = f"test_user_{int(time.time())}"  # Unique username using timestamp
+        msg = json.dumps({"cmd": "create", "from": unique_user, "password": "1234"}) + "\n"
         response = self.send_and_receive(msg.encode())
         self.assertIn("Account created", response)
 
