@@ -1,198 +1,220 @@
-# server_custom.py
 import socket
 import struct
 import fnmatch
 import threading
 import datetime
 import hashlib
-from Custom_impl.protocol_custom import (
-    HEADER_SIZE, CMD_LOGIN, CMD_CREATE, CMD_SEND, CMD_READ, CMD_DELETE_MSG,
-    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE, CMD_SEARCH_USERS,
-    CMD_READ_ACK, 
-    encode_message, decode_message, pack_short_string, pack_long_string,
+
+from protocol_custom import (
+    HEADER_SIZE,
+    CMD_LOGIN, CMD_CREATE, CMD_SEND, CMD_READ,
+    CMD_DELETE_MSG, CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE,
+    CMD_CHAT, CMD_LIST, CMD_READ_ACK,
+    encode_message, decode_message,
+    pack_short_string, pack_long_string,
     unpack_short_string, unpack_long_string
 )
 
-# Data stores (in memory)
-users = {}        # username -> { "password": <hash>, "messages": [(sender, message), ...] }
-active_users = {} # username -> connection object
-conversations = {}  # (username1, username2) sorted tuple -> list of message dicts
+CMD_DELETE = CMD_DELETE_ACC 
+
+# Data stores for user info, active connections, and conversation history
+users = {}         
+active_users = {} 
+conversations = {} 
+next_message_id = 1
 
 def get_matching_users(wildcard="*"):
-    """Returns a list of usernames matching the given wildcard pattern."""
+    # Return list of usernames matching the given wildcard pattern
     return fnmatch.filter(list(users.keys()), wildcard)
 
 def handle_client(conn, addr):
-    print(f"Connected: {addr}")
+    global next_message_id
+    print(f"[NEW CONNECTION] {addr} connected.")
     try:
         while True:
+            # Decode the incoming command and its payload from the client
             cmd, payload = decode_message(conn)
-            # --- Process each command ---
+
             if cmd == CMD_LOGIN:
-                # Payload: username (short string) + password (short string)
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
                 password, offset = unpack_short_string(payload, offset)
                 if username not in users:
-                    response = "Username does not exist"
-                    conn.sendall(encode_message(CMD_LOGIN, pack_short_string(response)))
+                    resp = "Username does not exist"
                 else:
-                    hashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
-                    if users[username]["password"] != hashed:
-                        response = "Incorrect password"
-                        conn.sendall(encode_message(CMD_LOGIN, pack_short_string(response)))
+                    stored_hash = users[username]["password_hash"]
+                    hashed = hashlib.sha256(password.encode("utf-8")).hexdigest()
+                    if hashed != stored_hash:
+                        resp = "Incorrect password"
                     else:
                         active_users[username] = conn
-                        response = f"Login successful. Unread messages: {len(users[username]['messages'])}"
-                        conn.sendall(encode_message(CMD_LOGIN, pack_short_string(response)))
+                        unread_count = len(users[username]["messages"])
+                        resp = f"Login successful. Unread messages: {unread_count}"
+                conn.sendall(encode_message(CMD_LOGIN, pack_short_string(resp)))
+
             elif cmd == CMD_CREATE:
-                # Payload: username (short string) + password (short string)
+                # Extract username and password and create new user if not exists
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
                 password, offset = unpack_short_string(payload, offset)
                 if username in users:
-                    response = "Username already exists"
-                    conn.sendall(encode_message(CMD_CREATE, pack_short_string(response)))
+                    resp = "Username already exists"
                 else:
-                    hashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
-                    users[username] = {"password": hashed, "messages": []}
-                    response = "Account created"
-                    conn.sendall(encode_message(CMD_CREATE, pack_short_string(response)))
+                    hashed = hashlib.sha256(password.encode("utf-8")).hexdigest()
+                    users[username] = {"password_hash": hashed, "messages": []}
+                    resp = "Account created"
+                conn.sendall(encode_message(CMD_CREATE, pack_short_string(resp)))
+
+            elif cmd == CMD_LIST:
+                offset = 0
+                wildcard = unpack_short_string(payload, offset)[0] if payload else "*"
+                matching = fnmatch.filter(list(users.keys()), wildcard)
+                matching_str = ",".join(matching)
+                conn.sendall(encode_message(CMD_LIST, pack_long_string(matching_str)))
+
             elif cmd == CMD_SEND:
-                # Payload: sender (short), recipient (short), message (long)
+                # Get sender, recipient, and message text
                 offset = 0
                 sender, offset = unpack_short_string(payload, offset)
                 recipient, offset = unpack_short_string(payload, offset)
-                message, offset = unpack_long_string(payload, offset)
-                # Update conversation history
+                msg_text, offset = unpack_long_string(payload, offset)
+                # Record message in conversation history with timestamp and unique ID
                 conv_key = tuple(sorted([sender, recipient]))
                 if conv_key not in conversations:
                     conversations[conv_key] = []
                 timestamp = datetime.datetime.now().isoformat()
-                conversations[conv_key].append({"sender": sender, "message": message, "timestamp": timestamp})
+                message_entry = {"id": next_message_id, "sender": sender, "message": msg_text, "timestamp": timestamp}
+                next_message_id += 1
+                conversations[conv_key].append(message_entry)
+                # If recipient exists and is active, deliver message immediately; otherwise, store as unread
                 if recipient not in users:
-                    response = "Recipient not found"
-                    conn.sendall(encode_message(CMD_SEND, pack_short_string(response)))
+                    resp = "Recipient not found"
                 else:
                     if recipient in active_users:
                         try:
-                            # Push the message immediately using CMD_READ as a response format
-                            payload_resp = pack_short_string(sender) + pack_long_string(message)
-                            active_users[recipient].sendall(encode_message(CMD_READ, payload_resp))
-                        except Exception as e:
-                            users[recipient]["messages"].append((sender, message))
+                            live_payload = pack_short_string(sender) + pack_long_string(msg_text)
+                            active_users[recipient].sendall(encode_message(CMD_CHAT, live_payload))
+                        except Exception:
+                            users[recipient]["messages"].append({"sender": sender, "message": msg_text})
                     else:
-                        users[recipient]["messages"].append((sender, message))
-                    response = "Message sent"
-                    conn.sendall(encode_message(CMD_SEND, pack_short_string(response)))
+                        users[recipient]["messages"].append({"sender": sender, "message": msg_text})
+                    resp = "Message sent"
+                conn.sendall(encode_message(CMD_SEND, pack_short_string(resp)))
 
             elif cmd == CMD_READ:
-                # Extract username
+                # Send unread messages to the user, up to an optional limit
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
-
                 limit = struct.unpack_from("!B", payload, offset)[0] if offset < len(payload) else 0
-                msgs = users.get(username, {}).get("messages", [])
-
-                if limit > 0:
-                    msgs_to_send = msgs[:limit]
-                    users[username]["messages"] = msgs[limit:]
+                if username not in users:
+                    resp = "User not found"
+                    conn.sendall(encode_message(CMD_READ, pack_long_string(resp)))
                 else:
-                    msgs_to_send = msgs
-                    users[username]["messages"] = []
+                    msgs = users[username]["messages"]
+                    msgs_to_send = msgs[:limit] if limit > 0 else msgs
+                    users[username]["messages"] = msgs[limit:] if limit > 0 else []
+                    if not msgs_to_send:
+                        conn.sendall(encode_message(CMD_READ, pack_long_string("NO_MESSAGES")))
+                    else:
+                        for message in msgs_to_send:
+                            one_msg = pack_short_string(message["sender"]) + pack_long_string(message["message"])
+                            conn.sendall(encode_message(CMD_READ, one_msg))
+                        conn.sendall(encode_message(CMD_READ, pack_long_string("END_OF_MESSAGES")))
 
-                if not msgs_to_send:
-                    # If no messages, send explicit "NO_MESSAGES" signal
-                    conn.sendall(encode_message(CMD_READ, pack_long_string("NO_MESSAGES")))
-                else:
-                    for sender, msg_text in msgs_to_send:
-                        payload_resp = pack_short_string(sender) + pack_long_string(msg_text)
-                        conn.sendall(encode_message(CMD_READ, payload_resp))
+            elif cmd == CMD_DELETE_MSG:
+                # Supports deleting from conversation or unread messages
+                try:
+                    offset = 0
+                    username, offset = unpack_short_string(payload, offset)
+                    if len(payload) - offset >= 1:
+                        potential_other_len = payload[offset]
+                        if potential_other_len != 0 and (len(payload) - offset >= 1 + potential_other_len):
+                            other_user, offset = unpack_short_string(payload, offset)
+                            if len(payload) - offset < 1:
+                                raise ValueError("Not enough bytes for count")
+                            count = struct.unpack_from("!B", payload, offset)[0]
+                            offset += 1
+                            if len(payload) - offset < count:
+                                raise ValueError("Not enough bytes for message IDs")
+                            ids_to_delete = [struct.unpack_from("!B", payload, offset + i)[0] for i in range(count)]
+                            offset += count
+                            conv_key = tuple(sorted([username, other_user]))
+                            if conv_key not in conversations:
+                                resp = "No conversation found"
+                            else:
+                                conv = conversations[conv_key]
+                                conversations[conv_key] = [msg for msg in conv if msg.get("id") not in ids_to_delete]
+                                resp = "Specified conversation messages deleted"
+                            conn.sendall(encode_message(CMD_DELETE_MSG, pack_short_string(resp)))
+                            continue
 
-                    # Send a termination signal at the end
-                    conn.sendall(encode_message(CMD_READ, pack_long_string("END_OF_MESSAGES")))
-
-                # 👇 WAIT FOR CLIENT TO ACKNOWLEDGE READING COMPLETION
-                cmd, _ = decode_message(conn)  # This waits for an acknowledgment
-                if cmd != CMD_READ:
-                    print(f"Unexpected acknowledgment: {cmd}")  # Debugging
-
-
+                    if len(payload) - offset < 1:
+                        raise ValueError("Not enough bytes for count in unread deletion")
+                    count = struct.unpack_from("!B", payload, offset)[0]
+                    offset += 1
+                    indices = [struct.unpack_from("!B", payload, offset + i)[0] for i in range(count)]
+                    offset += count
+                    if username not in users:
+                        resp = "User not found"
+                    else:
+                        current_msgs = users[username]["messages"]
+                        users[username]["messages"] = [msg for i, msg in enumerate(current_msgs) if i not in indices]
+                        resp = "Specified messages deleted"
+                    conn.sendall(encode_message(CMD_DELETE_MSG, pack_short_string(resp)))
+                except Exception as e:
+                    print("Error in CMD_DELETE_MSG:", e)
+                    resp = "Error processing delete message command"
+                    conn.sendall(encode_message(CMD_DELETE_MSG, pack_short_string(resp)))
 
             elif cmd == CMD_VIEW_CONV:
-                # Payload: username (short) + other_user (short)
+                # Return formatted conversation history between two users
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
                 other_user, offset = unpack_short_string(payload, offset)
                 if other_user not in users:
-                    response = "User not found"
-                    conn.sendall(encode_message(CMD_VIEW_CONV, pack_short_string(response)))
+                    resp = "User not found"
+                    conn.sendall(encode_message(CMD_VIEW_CONV, pack_short_string(resp)))
                 else:
                     conv_key = tuple(sorted([username, other_user]))
                     conv = conversations.get(conv_key, [])
-                    # For simplicity, convert conversation history to a string
-                    response = str(conv)
-                    conn.sendall(encode_message(CMD_VIEW_CONV, pack_long_string(response)))
-            elif cmd == CMD_DELETE_MSG:
-                # Payload: username (short) + count (1 byte) + indices (each 1 byte)
-                offset = 0
-                username, offset = unpack_short_string(payload, offset)
-                count = struct.unpack_from("!B", payload, offset)[0]
-                offset += 1
-                indices = []
-                for i in range(count):
-                    idx = struct.unpack_from("!B", payload, offset)[0]
-                    offset += 1
-                    indices.append(idx)
-                current_msgs = users.get(username, {}).get("messages", [])
-                new_msgs = [msg for i, msg in enumerate(current_msgs) if i not in indices]
-                if username in users:
-                    users[username]["messages"] = new_msgs
-                response = "Specified messages deleted"
-                conn.sendall(encode_message(CMD_DELETE_MSG, pack_short_string(response)))
-            elif cmd == CMD_SEARCH_USERS:
-                # Extract wildcard pattern from payload
-                offset = 0
-                wildcard, offset = unpack_short_string(payload, offset)
+                    if not conv:
+                        resp = "No conversation history found"
+                        conn.sendall(encode_message(CMD_VIEW_CONV, pack_long_string(resp)))
+                    else:
+                        formatted = ""
+                        for msg in conv:
+                            formatted += f"[ID {msg.get('id', '?')}] [{msg.get('timestamp', '')}] {msg.get('sender', '')}: {msg.get('message', '')}\n"
+                        conn.sendall(encode_message(CMD_VIEW_CONV, pack_long_string(formatted)))
 
-                # Get matching usernames using fnmatch
-                matching_users = get_matching_users(wildcard)
-
-                # Convert the list to a string response
-                response = ",".join(matching_users) if matching_users else "No matching users"
-
-                # Send response back to client
-                conn.sendall(encode_message(CMD_SEARCH_USERS, pack_long_string(response)))
-            elif cmd == CMD_DELETE_ACC:
-                # Payload: username (short)
+            elif cmd == CMD_DELETE:
+                # Remove user from records and active users
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
                 if username not in users:
-                    response = "User does not exist"
-                    conn.sendall(encode_message(CMD_DELETE_ACC, pack_short_string(response)))
-                elif len(users[username]["messages"]) > 0:
-                    response = "Undelivered messages exist"
-                    conn.sendall(encode_message(CMD_DELETE_ACC, pack_short_string(response)))
+                    resp = "User does not exist"
                 else:
                     del users[username]
                     if username in active_users:
                         del active_users[username]
-                    response = "Account deleted"
-                    conn.sendall(encode_message(CMD_DELETE_ACC, pack_short_string(response)))
+                    resp = "Account deleted"
+                conn.sendall(encode_message(CMD_DELETE, pack_short_string(resp)))
+
             elif cmd == CMD_LOGOFF:
-                # Payload: username (short)
+                # Log off the user
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
                 if username in active_users:
                     del active_users[username]
-                response = "User logged off"
-                conn.sendall(encode_message(CMD_LOGOFF, pack_short_string(response)))
+                resp = "User logged off"
+                conn.sendall(encode_message(CMD_LOGOFF, pack_short_string(resp)))
+
             elif cmd == CMD_CLOSE:
-                print(f"Closing connection: {addr}")
+                print(f"[DISCONNECT] {addr} requested close.")
                 break
+
             else:
-                response = "Unknown command"
-                conn.sendall(encode_message(0, pack_short_string(response)))
+                resp = "Unknown command"
+                conn.sendall(encode_message(0, pack_short_string(resp)))
     except Exception as e:
         print(f"Error handling client {addr}: {e}")
     finally:
