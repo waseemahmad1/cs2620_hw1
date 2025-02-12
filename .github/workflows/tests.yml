@@ -21,4 +21,3 @@ jobs:
       - name: Run tests with coverage
         run: |
           coverage run -m unittest discover tests
-          coverage report -m
