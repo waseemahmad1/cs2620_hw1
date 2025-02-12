@@ -15,6 +15,9 @@ CMD_VIEW_CONV   = 6
 CMD_DELETE_ACC  = 7
 CMD_LOGOFF      = 8
 CMD_CLOSE       = 9
+CMD_SEARCH_USERS = 10
+CMD_READ_ACK = 11  # Acknowledgment for finished reading
+
 
 # --- Helper functions for strings ---
 def pack_short_string(s):

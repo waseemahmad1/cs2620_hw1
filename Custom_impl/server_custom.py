@@ -1,12 +1,14 @@
 # server_custom.py
 import socket
 import struct
+import fnmatch
 import threading
 import datetime
 import hashlib
-from protocol_custom import (
+from Custom_impl.protocol_custom import (
     HEADER_SIZE, CMD_LOGIN, CMD_CREATE, CMD_SEND, CMD_READ, CMD_DELETE_MSG,
-    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE,
+    CMD_VIEW_CONV, CMD_DELETE_ACC, CMD_LOGOFF, CMD_CLOSE, CMD_SEARCH_USERS,
+    CMD_READ_ACK, 
     encode_message, decode_message, pack_short_string, pack_long_string,
     unpack_short_string, unpack_long_string
 )
@@ -15,6 +17,10 @@ from protocol_custom import (
 users = {}        # username -> { "password": <hash>, "messages": [(sender, message), ...] }
 active_users = {} # username -> connection object
 conversations = {}  # (username1, username2) sorted tuple -> list of message dicts
+
+def get_matching_users(wildcard="*"):
+    """Returns a list of usernames matching the given wildcard pattern."""
+    return fnmatch.filter(list(users.keys()), wildcard)
 
 def handle_client(conn, addr):
     print(f"Connected: {addr}")
@@ -79,24 +85,40 @@ def handle_client(conn, addr):
                         users[recipient]["messages"].append((sender, message))
                     response = "Message sent"
                     conn.sendall(encode_message(CMD_SEND, pack_short_string(response)))
+
             elif cmd == CMD_READ:
-                # Payload: username (short) + limit (1 byte; 0 means all)
+                # Extract username
                 offset = 0
                 username, offset = unpack_short_string(payload, offset)
-                if offset < len(payload):
-                    limit = struct.unpack_from("!B", payload, offset)[0]
-                else:
-                    limit = 0
+
+                limit = struct.unpack_from("!B", payload, offset)[0] if offset < len(payload) else 0
                 msgs = users.get(username, {}).get("messages", [])
+
                 if limit > 0:
                     msgs_to_send = msgs[:limit]
                     users[username]["messages"] = msgs[limit:]
                 else:
                     msgs_to_send = msgs
                     users[username]["messages"] = []
-                for sender, msg_text in msgs_to_send:
-                    payload_resp = pack_short_string(sender) + pack_long_string(msg_text)
-                    conn.sendall(encode_message(CMD_READ, payload_resp))
+
+                if not msgs_to_send:
+                    # If no messages, send explicit "NO_MESSAGES" signal
+                    conn.sendall(encode_message(CMD_READ, pack_long_string("NO_MESSAGES")))
+                else:
+                    for sender, msg_text in msgs_to_send:
+                        payload_resp = pack_short_string(sender) + pack_long_string(msg_text)
+                        conn.sendall(encode_message(CMD_READ, payload_resp))
+
+                    # Send a termination signal at the end
+                    conn.sendall(encode_message(CMD_READ, pack_long_string("END_OF_MESSAGES")))
+
+                # 👇 WAIT FOR CLIENT TO ACKNOWLEDGE READING COMPLETION
+                cmd, _ = decode_message(conn)  # This waits for an acknowledgment
+                if cmd != CMD_READ:
+                    print(f"Unexpected acknowledgment: {cmd}")  # Debugging
+
+
+
             elif cmd == CMD_VIEW_CONV:
                 # Payload: username (short) + other_user (short)
                 offset = 0
@@ -128,6 +150,19 @@ def handle_client(conn, addr):
                     users[username]["messages"] = new_msgs
                 response = "Specified messages deleted"
                 conn.sendall(encode_message(CMD_DELETE_MSG, pack_short_string(response)))
+            elif cmd == CMD_SEARCH_USERS:
+                # Extract wildcard pattern from payload
+                offset = 0
+                wildcard, offset = unpack_short_string(payload, offset)
+
+                # Get matching usernames using fnmatch
+                matching_users = get_matching_users(wildcard)
+
+                # Convert the list to a string response
+                response = ",".join(matching_users) if matching_users else "No matching users"
+
+                # Send response back to client
+                conn.sendall(encode_message(CMD_SEARCH_USERS, pack_long_string(response)))
             elif cmd == CMD_DELETE_ACC:
                 # Payload: username (short)
                 offset = 0
