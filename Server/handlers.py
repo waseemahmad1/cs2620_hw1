@@ -32,14 +32,21 @@ def handle_delete(server, conn, parts):
 
     if username not in users:
         conn.send(create_msg(cmd, body="The user does not exist", err=True))
-    elif len(users[username]["messages"]) > 0:
-        conn.send(create_msg(cmd, body="Undelivered messages still exist", err=True))
-    else:
-        del users[username]
-        if username in active_users:
-            del active_users[username]
-        # You could send a response if desired, or leave it silent
-        # conn.send(create_msg(cmd, body="Account has been successfully deleted!"))
+        return
+
+    # Remove messages sent by this user from all other users
+    for recipient in users:
+        users[recipient]["messages"] = [msg for msg in users[recipient]["messages"] if msg["sender"] != username]
+
+    # Delete the user account
+    del users[username]
+
+    # Remove from active users if logged in
+    if username in active_users:
+        del active_users[username]
+
+    conn.send(create_msg(cmd, body="Account has been successfully deleted."))
+
 
 def handle_logoff(server, conn, parts):
     cmd = parts.get("cmd")
