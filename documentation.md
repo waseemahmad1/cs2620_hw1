@@ -42,8 +42,8 @@ Once the server is running, start a client.
    - Send messages.
    - Read messages.
    - List accounts.
-   - Delete messages.
-   - Log off.
+   - Delete messages
+   - Log off
 
 ## Running the GUI (Graphical User Interface)
 A Tkinter-based GUI is available for interaction.
