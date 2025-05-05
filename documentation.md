@@ -23,7 +23,7 @@ The server must be started first before clients can connect.
    ```
 
 ## Running the Command-Line Client
-Once the server is running, start a client
+Once the server is running, start a client.
 
 ### Start the Client
 1. Open a new terminal.
