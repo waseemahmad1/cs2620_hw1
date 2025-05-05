@@ -38,10 +38,10 @@ Once the server is running, start a client.
    Press **Enter** to use the default `localhost`.
 4. Follow the on-screen options to:
    - Login
-   - Create an account.
+   - Create an account
    - Send messages.
-   - Read messages.
-   - List accounts.
+   - Read messages
+   - List accounts
    - Delete messages
    - Log off
 
